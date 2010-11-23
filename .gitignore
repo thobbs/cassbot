@@ -1,3 +1,4 @@
 *.pyc
 plugins/dropin.cache
 cassbot.state.db
+/run
