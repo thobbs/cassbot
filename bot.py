@@ -91,12 +91,12 @@ class CassBot(irc.IRCClient):
         for match in TICKET_RE.finditer(msg):
             ticket = int(match.group(1))
             if ticket > LOW_TICKET_CUTOFF:
-                self.post_ticket(ticket)
+                self.post_ticket(ticket, user)
         for match in LOW_TICKET_RE.finditer(msg):
-            self.post_ticket(int(match.group(1)))
+            self.post_ticket(int(match.group(1)), user)
 
-    def post_ticket(self, ticket_num):
-        url = 'http://issues.apache.org/jira/browse/CASSANDRA-%d' % (ticket,)
+    def post_ticket(self, ticket_num, user):
+        url = 'http://issues.apache.org/jira/browse/CASSANDRA-%d' % (ticket_num,)
         self.msg(user, url)
 
     def checkrevs(self, user, msg):
