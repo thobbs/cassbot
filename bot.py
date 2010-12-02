@@ -8,8 +8,7 @@ from twisted.web.client import getPage
 from twisted.web.error import Error
 from twisted.python import log, logfile
 
-TICKET_RE = re.compile(r'(?:^|[]\s[(){}<>/:",-])#(\d+)\b')
-LOW_TICKET_RE = re.compile(r'(?:^|[]\s[(){}<>/:",-])##(\d)\b')
+TICKET_RE = re.compile(r'(?:^|[]\s[(){}<>/:",-])(#{1,2})(\d+)\b')
 COMMIT_RE = re.compile(r'\br(\d+)\b')
 
 LOW_TICKET_CUTOFF = 10
@@ -89,11 +88,9 @@ class CassBot(irc.IRCClient):
 
     def checktickets(self, user, msg):
         for match in TICKET_RE.finditer(msg):
-            ticket = int(match.group(1))
-            if ticket > LOW_TICKET_CUTOFF:
+            ticket = int(match.group(2))
+            if ticket > LOW_TICKET_CUTOFF or match.group(1) == '##':
                 self.post_ticket(ticket, user)
-        for match in LOW_TICKET_RE.finditer(msg):
-            self.post_ticket(int(match.group(1)), user)
 
     def post_ticket(self, ticket_num, user):
         url = 'http://issues.apache.org/jira/browse/CASSANDRA-%d' % (ticket_num,)
