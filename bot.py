@@ -9,7 +9,10 @@ from twisted.web.error import Error
 from twisted.python import log, logfile
 
 TICKET_RE = re.compile(r'(?:^|[]\s[(){}<>/:",-])#(\d+)\b')
+LOW_TICKET_RE = re.compile(r'(?:^|[]\s[(){}<>/:",-])##(\d)\b')
 COMMIT_RE = re.compile(r'\br(\d+)\b')
+
+LOW_TICKET_CUTOFF = 10
 
 # This was the original. It was broken.
 # COMMIT_RE = re.compile(r'r(\d+)')
@@ -87,10 +90,14 @@ class CassBot(irc.IRCClient):
     def checktickets(self, user, msg):
         for match in TICKET_RE.finditer(msg):
             ticket = int(match.group(1))
-            if ticket < 10:
-                return
-            url = 'http://issues.apache.org/jira/browse/CASSANDRA-%d' % (ticket,)
-            self.msg(user, url)
+            if ticket > LOW_TICKET_CUTOFF:
+                self.post_ticket(ticket)
+        for match in LOW_TICKET_RE.finditer(msg):
+            self.post_ticket(int(match.group(1)))
+
+    def post_ticket(self, ticket_num):
+        url = 'http://issues.apache.org/jira/browse/CASSANDRA-%d' % (ticket,)
+        self.msg(user, url)
 
     def checkrevs(self, user, msg):
         for match in COMMIT_RE.finditer(msg):
