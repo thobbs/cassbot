@@ -1,16 +1,16 @@
 # cassbot
 
 import re
-import sys
 import time
 import shlex
 from twisted.words.protocols import irc
 from twisted.internet import reactor, defer, protocol
 from twisted.web import client, error
-from twisted.python import log, logfile
-from twisted.plugin import getPlugins
-from twisted.application import strports
+from twisted.python import log
+from twisted.plugin import getPlugins, IPlugin
+from twisted.application import internet, service
 from zope.interface import Interface, implements
+import plugins
 
 
 class IBotPlugin(Interface):
@@ -58,8 +58,8 @@ class IBotPlugin(Interface):
         """
 
 
-class BaseBotPlugin:
-    implements(IBotPlugin)
+class BaseBotPlugin(object):
+    implements(IPlugin, IBotPlugin)
 
     @classmethod
     def name(cls):
@@ -141,9 +141,13 @@ class CassBotCore(irc.IRCClient):
         'receivedMOTD',
         'msg'
     )
-    plugin_scan_period = 240
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, nickname='cassbot'):
+        # state that will be saved and reset on this object by the service
+        self.nickname = nickname
+        self.join_channels = ()
+        self.cmd_prefix = None
+
         self.channels = set()
         self.chan_modemap = {}
         self.server_modemap = {}
@@ -153,22 +157,16 @@ class CassBotCore(irc.IRCClient):
         self.is_signed_on = False
         self.init_time = time.time()
 
-        self.watcher_map = {}
-        self.command_map = {}
-
         for mname in self.overrideable:
             realmethod = getattr(self, mname, noop)
             wrappedmethod = self.make_watch_wrapper(mname, realmethod)
             setattr(self, mname, wrappedmethod)
 
-        self.plugin_scanner = task.LoopingCall(self.scan_plugins)
-        self.plugin_scanner.start(self.plugin_scan_period, now=True)
-
     def make_watch_wrapper(self, mname, realmethod):
         @defer.inlineCallbacks
         def wrapper(*a, **kw):
             realresult = realmethod(*a, **kw)
-            watchers = self.watcher_map.get(mname, ())
+            watchers = self.service.watcher_map.get(mname, ())
             for w in watchers:
                 pluginmethod = getattr(w, mname, noop)
                 try:
@@ -176,26 +174,9 @@ class CassBotCore(irc.IRCClient):
                 except Exception, e:
                     log.err(None, 'Exception in plugin %s for method %r'
                                   % (w.name(), mname))
-            return realresult
+            defer.returnValue(realresult)
         wrapper.func_name = 'wrapper_for_%s' % mname
         return wrapper
-
-    def scan_plugins(self):
-        self.watcher_map = {}
-        self.command_map = {}
-        for p in getPlugins(IBotPlugin):
-            try:
-                for methodname in p.interestingMethods():
-                    self.watcher_map.setdefault(methodname, []).append(p)
-            except Exception:
-                log.err(None, 'Exception in plugin %s for interestingMethods request'
-                              % (p.name(),))
-            try:
-                for cmdname in p.implementedCommands():
-                    self.command_map.setdefault(cmdname, []).append(p)
-            except Exception:
-                log.err(None, 'Exception in plugin %s for implementedCommands request'
-                              % (p.name(),))
 
     def add_channel(self, channel):
         self.channels.add(channel)
@@ -210,7 +191,7 @@ class CassBotCore(irc.IRCClient):
         cmd = cmd.lower()
         mname = 'command_' + cmd
         handled = 0
-        for p in self.command_map.get(cmd, ()):
+        for p in self.service.command_map.get(cmd, ()):
             try:
                 pluginmethod = getattr(p, mname)
             except AttributeError:
@@ -224,22 +205,13 @@ class CassBotCore(irc.IRCClient):
 
     def address_msg(self, user, channel, msg):
         if user != channel:
+            if '!' in user:
+                user = user.split('!', 1)[0]
             msg = '%s: %s' % (user, msg)
-        self.msg(channel, msg)
+        return self.msg(channel, msg)
 
     def command_not_found(self, user, channel, cmd):
         self.address_msg(user, channel, "Sorry, I don't understand %r. :(" % cmd)
-
-    @property
-    def nickname(self):
-        try:
-            return self._nickname
-        except AttributeError:
-            return self.factory.nickname
-
-    @nickname.setter
-    def nickname(self, nick):
-        self._nickname = nick
 
     ### methods called by the protocol
 
@@ -256,10 +228,18 @@ class CassBotCore(irc.IRCClient):
         self.serverhost_info = info
 
     def privmsg(self, user, channel, message):
-        parts = shlex.split(message)
-        cmd = parts[0]
-        args = parts[1:]
-        self.dispatch_command(user, channel, cmd, args)
+        cmdstr = None
+        if user == channel:
+            cmdstr = message
+        if message.startswith('%s:' % (self.nickname,)):
+            cmdstr = message[len(self.nickname)+1:]
+        elif self.cmd_prefix is not None and message.startswith(self.cmd_prefix):
+            cmdstr = message[len(self.cmd_prefix):]
+        if cmdstr is not None:
+            parts = shlex.split(cmdstr.strip())
+            cmd = parts[0]
+            args = parts[1:]
+            self.dispatch_command(user, channel, cmd, args)
 
     def joined(self, channel):
         self.add_channel(channel)
@@ -290,13 +270,12 @@ class CassBotCore(irc.IRCClient):
                         pass
 
     def signedOn(self):
-        for chan in self.factory.channels:
+        self.factory.prot = self
+        self.factory.resetDelay()
+        for chan in self.join_channels:
             self.join(chan)
         self.is_signed_on = True
         self.sign_on_time = time.time()
-
-    def nickChanged(self, nick):
-        self.nickname = nick
 
     def userJoined(self, user, channel):
         self.channel_memberships.setdefault(channel, set()).add(user)
@@ -317,7 +296,15 @@ class CassBotCore(irc.IRCClient):
 
     def connectionLost(self, reason):
         self.is_signed_on = False
+        try:
+            del self.factory.prot
+        except AttributeError:
+            pass
         return irc.IRCClient.connectionLost(self, reason)
+
+    def lineReceived(self, line):
+        log.msg('line received: %r' % line)
+        return irc.IRCClient.lineReceived(self, line)
 
 
 class BotLogger(BaseBotPlugin):
@@ -411,16 +398,17 @@ class CassandraLinkChecker(BaseBotPlugin):
             commit = int(match.group(1))
             yield 'http://svn.apache.org/viewvc?view=rev&revision=%d' % (commit,)
 
+    @defer.inlineCallbacks
     def privmsg(self, bot, user, channel, msg):
         responses = list(self.checktickets(msg)) \
                   + list(self.checkrevs(msg))
         for r in responses:
-            bot.msg(channel, r)
+            yield bot.msg(channel, r)
 
 
 class LogCommand(BaseBotPlugin):
     def command_logs(self, bot, user, channel, args):
-        bot.msg(channel, 'http://www.eflorenzano.com/cassbot/')
+        return bot.msg(channel, 'http://www.eflorenzano.com/cassbot/')
 
 
 class BuildCommand(BaseBotPlugin):
@@ -430,7 +418,7 @@ class BuildCommand(BaseBotPlugin):
     @defer.inlineCallbacks
     def command_build(self, bot, user, channel, args):
         if not args[0]:
-            bot.msg(channel, "usage: build <buildname>")
+            yield bot.msg(channel, "usage: build <buildname>")
             return
         url = '%s/%s/polling?token=%s' % (self.build_url, args[0], self.build_token)
         msg = "request sent!"
@@ -448,10 +436,82 @@ class BuildCommand(BaseBotPlugin):
 class CassBotFactory(protocol.ReconnectingClientFactory):
     protocol = CassBotCore
 
-    def __init__(self, channels, nickname):
-        self.channels = channels
-        self.nickname = nickname
+    def buildProtocol(self, addr):
+        p = protocol.ReconnectingClientFactory.buildProtocol(self, addr)
+        self.service.initialize_proto_state(p)
+        return p
 
 
-def CassBotService(addr, nickname='CassBot', channels=(), reactor=None):
-    return strports.service(addr, CassBotFactory(channels, nickname), reactor=reactor)
+class CassBotService(service.MultiService):
+    plugin_scan_period = 240
+
+    def __init__(self, host, port, nickname='cassbot', init_channels=(), reactor=None):
+        service.MultiService.__init__(self)
+
+        self.myhost = host
+        self.myport = int(port)
+
+        self.state = {
+            'nickname': nickname,
+            'channels': init_channels,
+            'cmd_prefix': None
+        }
+
+        if reactor is None:
+            from twisted.internet import reactor
+        self.reactor = reactor
+
+        self.watcher_map = {}
+        self.command_map = {}
+
+        self.plugin_scanner = internet.TimerService(self.plugin_scan_period, self.scan_plugins)
+        self.plugin_scanner.setServiceParent(self)
+
+        self.pfactory = CassBotFactory()
+        self.client = internet.TCPClient(self.myhost, self.myport, self.pfactory, reactor=reactor)
+        self.client.setServiceParent(self)
+
+    def startService(self):
+        self.pfactory.service = self
+        return service.MultiService.startService(self)
+
+    def stopService(self):
+        self.pfactory.service = None
+        return service.MultiService.stopService(self)
+
+    def scan_plugins(self):
+        self.watcher_map = {}
+        self.command_map = {}
+        for p in getPlugins(IBotPlugin, plugins):
+            try:
+                for methodname in p.interestingMethods():
+                    self.watcher_map.setdefault(methodname, []).append(p)
+            except Exception:
+                log.err(None, 'Exception in plugin %s for interestingMethods request'
+                              % (p.name(),))
+            try:
+                for cmdname in p.implementedCommands():
+                    self.command_map.setdefault(cmdname, []).append(p)
+            except Exception:
+                log.err(None, 'Exception in plugin %s for implementedCommands request'
+                              % (p.name(),))
+
+    def initialize_proto_state(self, proto):
+        proto.nickname = self.state['nickname']
+        proto.join_channels = self.state.get('channels', ())
+        proto.cmd_prefix = self.state.get('cmd_prefix', None)
+        proto.service = self
+
+    def __str__(self):
+        return '<%s object [%s:%d]%s>' % (
+            self.__class__.__name__,
+            self.myhost,
+            self.myport,
+            ' (connected)' if hasattr(self.pfactory, 'prot') else ''
+        )
+
+    def getbot(self):
+        return self.pfactory.prot
+
+
+# vim: set et sw=4 ts=4 :
