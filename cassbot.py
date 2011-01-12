@@ -1,5 +1,7 @@
 # cassbot
 
+from __future__ import with_statement
+
 import time
 import shlex
 from twisted.words.protocols import irc
@@ -9,6 +11,11 @@ from twisted.plugin import getPlugins, IPlugin
 from twisted.application import internet, service
 from zope.interface import Interface, interface, implements
 import plugins
+
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 
 class IBotPlugin(Interface):
@@ -360,6 +367,7 @@ class CassBotFactory(protocol.ReconnectingClientFactory):
 
 class CassBotService(service.MultiService):
     plugin_scan_period = 240
+    statefile = 'cassbot.state.db'
 
     def __init__(self, host, port, nickname='cassbot', init_channels=(), reactor=None):
         service.MultiService.__init__(self)
@@ -389,12 +397,18 @@ class CassBotService(service.MultiService):
         self.client = internet.TCPClient(self.myhost, self.myport, self.pfactory, reactor=reactor)
         self.client.setServiceParent(self)
 
+        try:
+            self.loadState(self.statefile)
+        except (IOError, ValueError):
+            pass
+
     def startService(self):
         self.pfactory.service = self
         return service.MultiService.startService(self)
 
     def stopService(self):
         self.pfactory.service = None
+        self.saveState(self.statefile)
         return service.MultiService.stopService(self)
 
     def scan_plugins(self):
@@ -432,6 +446,32 @@ class CassBotService(service.MultiService):
             pass
         else:
             plugin.loadState(pstate)
+
+    def saveState(self, statefile):
+        self.state['plugins'] = self.assemblePluginStates()
+        with open(statefile, 'w') as sfile:
+            pickle.dump(self.state, sfile, -1)
+
+    def loadState(self, statefile):
+        with open(statefile, 'r') as sfile:
+            self.state = pickle.load(sfile)
+        self.reapplyPluginStates(self.state['plugins'])
+
+    def assemblePluginStates(self):
+        s = {}
+        for p in getPlugins(IBotPlugin, plugins):
+            p = IBotPlugin(p)
+            pstate = p.saveState()
+            if pstate is not None:
+                s[p.name()] = pstate
+        return s
+
+    def reapplyPluginStates(self, pstates):
+        for p in getPlugins(IBotPlugin, plugins):
+            p = IBotPlugin(p)
+            pstate = pstates.get(p.name())
+            if pstate is not None:
+                p.loadState(pstate)
 
     def seen_plugin(self, plugin):
         return id(plugin) in self.plugins_seen
