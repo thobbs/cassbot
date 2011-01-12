@@ -1,15 +1,13 @@
 # cassbot
 
-import re
 import time
 import shlex
 from twisted.words.protocols import irc
-from twisted.internet import reactor, defer, protocol
-from twisted.web import client, error
+from twisted.internet import defer, protocol
 from twisted.python import log
 from twisted.plugin import getPlugins, IPlugin
 from twisted.application import internet, service
-from zope.interface import Interface, implements
+from zope.interface import Interface, interface, implements
 import plugins
 
 
@@ -57,6 +55,45 @@ class IBotPlugin(Interface):
         and args is a list of the words which followed the command.
         """
 
+    def saveState():
+        """
+        Return some pickleable object which contains all the configuration
+        or other state info that this plugin wants to save. The next time
+        the plugin is initialized, if the state is successfully unpickled
+        and correlated with this plugin, it will be restored to it using
+        the loadState() call.
+
+        If None is returned, no state will be saved for this plugin.
+        """
+
+    def loadState(state):
+        """
+        If this plugin previously offered a state object to save (see
+        saveState) and the cassbot system was able to unpickle it and
+        associate it with this plugin again, then it will be restored using
+        this call.
+
+        This plugin should not depend on any state being returned to it, or
+        on this call being made at all. __init__ should create a basic
+        "empty" state, and only if this method is called will any previous
+        state info be available.
+        """
+
+
+# twisted's plugin system seems a little stupid for insisting that plugin
+# objects be instances (i.e., they must 'provide' the plugin interface, not
+# 'implement' it). here we provide a zope.interface adapter for getting
+# instances from implementing classes (by calling them, derp).
+pluginmap = {}
+def plugin_from_pluginiface(iface, pluginclass):
+    if isinstance(pluginclass, type) and iface.implementedBy(pluginclass):
+        try:
+            return pluginmap[id(pluginclass)]
+        except KeyError:
+            pluginmap[id(pluginclass)] = p = pluginclass()
+            return p
+interface.adapter_hooks.append(plugin_from_pluginiface)
+
 
 class BaseBotPlugin(object):
     implements(IPlugin, IBotPlugin)
@@ -100,6 +137,12 @@ class BaseBotPlugin(object):
         for name, value in cls.__dict__.iteritems():
             if name.startswith('command_') and callable(value):
                 yield name[8:]
+
+    def saveState(self):
+        return None
+
+    def loadState(self, s):
+        pass
 
 
 def noop(*a, **kw):
@@ -197,7 +240,7 @@ class CassBotCore(irc.IRCClient):
             except AttributeError:
                 continue
             handled += 1
-            d = defer.maybeDeferred(pluginmethod, user, channel, cmd, args)
+            d = defer.maybeDeferred(pluginmethod, self, user, channel, args)
             d.addErrback(log.err, "Exception in plugin %s while in %s"
                                   % (p.name(), mname))
         if handled == 0:
@@ -303,134 +346,7 @@ class CassBotCore(irc.IRCClient):
         return irc.IRCClient.connectionLost(self, reason)
 
     def lineReceived(self, line):
-        log.msg('line received: %r' % line)
         return irc.IRCClient.lineReceived(self, line)
-
-
-class BotLogger(BaseBotPlugin):
-    eterno_blacklist = ['evn']
-
-    def __init__(self, blacklist=()):
-        self.log_blacklist = self.eterno_blacklist + list(blacklist)
-
-    def irclog(self, bot, *a, **kw):
-        kw['mtype'] = 'irclog'
-        return log.msg(*a, **kw)
-
-    def signedOn(self, bot):
-        self.irclog("Signed on as %s." % (self.nickname,))
-
-    def joined(self, bot, channel):
-        self.irclog("Joined %s." % (channel,))
-
-    def left(self, bot, channel):
-        self.irclog("Left %s." % (channel,))
-
-    def noticed(self, bot, user, chan, msg):
-        self.irclog("NOTICE -!- [%s] <%s> %s" % (chan, user, msg))
-
-    def modeChanged(self, bot, user, chan, being_set, modes, args):
-        self.irclog("MODE -!- %s %s modes %r in %r for %r" % (
-            user,
-            'set' if being_set else 'unset',
-            modes,
-            chan,
-            args
-        ))
-
-    def kickedFrom(self, bot, chan, kicker, msg):
-        self.irclog('KICKED -!- from %s by %s [%s]' % (chan, kicker, msg))
-
-    def nickChanged(self, bot, nick):
-        self.irclog('NICKCHANGE -!- my nick changed to %s' % (nick,))
-
-    def userJoined(self, bot, user, chan):
-        self.irclog('%s joined %s' % (user, chan))
-
-    def userLeft(self, bot, user, chan):
-        self.irclog('%s left %s' % (user, chan))
-
-    def userQuit(self, bot, user, msg):
-        self.irclog('%s quit [%s]' % (user, msg))
-
-    def userKicked(self, bot, kickee, chan, kicker, msg):
-        self.irclog('%s was kicked from %s by %s [%s]' % (kickee, chan, kicker, msg))
-
-    def topicUpdated(self, bot, user, chan, newtopic):
-        self.irclog('[%s] -!- topic changed by %s to %r' % (chan, user, newtopic))
-
-    def userRenamed(self, bot, oldname, newname):
-        self.irclog('RENAME %s is now known as %s' % (oldname, newname))
-
-    def receivedMOTD(self, bot, motd):
-        self.irclog('MOTD %s' % (motd,))
-
-    def msg(self, dest, msg, length=None):
-        self.irclog('[%s] <%s> %s' % (dest, self.nickname, msg))
-
-    def action(self, bot, user, chan, data):
-        user = user.split('!', 1)[0]
-        if user not in self.log_blacklist:
-            self.irclog('[%s] * %s %s' % (chan, user, data))
-
-    def privmsg(self, user, channel, msg):
-        user = user.split('!', 1)[0]
-        if user not in self.log_blacklist:
-            self.irclog('[%s] <%s> %s' % (channel, user, msg))
-
-
-class CassandraLinkChecker(BaseBotPlugin):
-    ticket_re = re.compile(r'(?:^|[]\s[(){}<>/:",-])(#{1,2})(\d+)\b')
-    commit_re = re.compile(r'\br(\d+)\b')
-    low_ticket_cutoff = 10
-
-    def checktickets(self, msg):
-        for match in self.ticket_re.finditer(msg):
-            ticket = int(match.group(2))
-            if ticket > self.low_ticket_cutoff or match.group(1) == '##':
-                yield self.post_ticket(ticket)
-
-    def post_ticket(self, ticket_num):
-        return 'http://issues.apache.org/jira/browse/CASSANDRA-%d' % (ticket_num,)
-
-    def checkrevs(self, msg):
-        for match in self.commit_re.finditer(msg):
-            commit = int(match.group(1))
-            yield 'http://svn.apache.org/viewvc?view=rev&revision=%d' % (commit,)
-
-    @defer.inlineCallbacks
-    def privmsg(self, bot, user, channel, msg):
-        responses = list(self.checktickets(msg)) \
-                  + list(self.checkrevs(msg))
-        for r in responses:
-            yield bot.msg(channel, r)
-
-
-class LogCommand(BaseBotPlugin):
-    def command_logs(self, bot, user, channel, args):
-        return bot.msg(channel, 'http://www.eflorenzano.com/cassbot/')
-
-
-class BuildCommand(BaseBotPlugin):
-    build_token = 'xxxxxxxxxxxx'
-    build_url = 'http://hudson.zones.apache.org/hudson/job'
-
-    @defer.inlineCallbacks
-    def command_build(self, bot, user, channel, args):
-        if not args[0]:
-            yield bot.msg(channel, "usage: build <buildname>")
-            return
-        url = '%s/%s/polling?token=%s' % (self.build_url, args[0], self.build_token)
-        msg = "request sent!"
-        try:
-            res = yield client.getPage(url)
-        except error.Error, e:
-            # Hudson returns a 404 even when this request succeeds :/
-            if e.status == '404':
-                pass
-            else:
-                msg = str(e)
-        bot.address_msg(user, channel, msg)
 
 
 class CassBotFactory(protocol.ReconnectingClientFactory):
@@ -454,7 +370,8 @@ class CassBotService(service.MultiService):
         self.state = {
             'nickname': nickname,
             'channels': init_channels,
-            'cmd_prefix': None
+            'cmd_prefix': None,
+            'plugins': {},
         }
 
         if reactor is None:
@@ -464,6 +381,7 @@ class CassBotService(service.MultiService):
         self.watcher_map = {}
         self.command_map = {}
 
+        self.plugins_seen = set()
         self.plugin_scanner = internet.TimerService(self.plugin_scan_period, self.scan_plugins)
         self.plugin_scanner.setServiceParent(self)
 
@@ -483,6 +401,10 @@ class CassBotService(service.MultiService):
         self.watcher_map = {}
         self.command_map = {}
         for p in getPlugins(IBotPlugin, plugins):
+            p = IBotPlugin(p)
+            if not self.seen_plugin(p):
+                log.msg('Loading plugin %s (first time)...' % p.name())
+                self.initialize_plugin_state(p)
             try:
                 for methodname in p.interestingMethods():
                     self.watcher_map.setdefault(methodname, []).append(p)
@@ -501,6 +423,18 @@ class CassBotService(service.MultiService):
         proto.join_channels = self.state.get('channels', ())
         proto.cmd_prefix = self.state.get('cmd_prefix', None)
         proto.service = self
+
+    def initialize_plugin_state(self, plugin):
+        self.plugins_seen.add(id(plugin))
+        try:
+            pstate = self.state['plugins'][plugin.name()]
+        except KeyError:
+            pass
+        else:
+            plugin.loadState(pstate)
+
+    def seen_plugin(self, plugin):
+        return id(plugin) in self.plugins_seen
 
     def __str__(self):
         return '<%s object [%s:%d]%s>' % (
