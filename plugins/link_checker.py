@@ -1,4 +1,5 @@
 import re
+from itertools import chain
 from twisted.internet import defer
 from cassbot import BaseBotPlugin
 
@@ -26,7 +27,10 @@ class CassandraLinkChecker(BaseBotPlugin):
 
     @defer.inlineCallbacks
     def privmsg(self, bot, user, channel, msg):
-        responses = list(self.checktickets(msg)) \
-                  + list(self.checkrevs(msg))
-        for r in responses:
+        for r in chain(self.checktickets(msg), self.checkrevs(msg)):
+            yield bot.msg(channel, r)
+
+    @defer.inlineCallbacks
+    def action(self, bot, user, channel, msg):
+        for r in chain(self.checktickets(msg), self.checkrevs(msg)):
             yield bot.msg(channel, r)
