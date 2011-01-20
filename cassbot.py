@@ -10,7 +10,7 @@ from twisted.python import log
 from twisted.plugin import getPlugins, IPlugin
 from twisted.application import internet, service
 from zope.interface import Interface, interface, implements
-import plugins
+import cassbot_plugins
 
 try:
     import cPickle as pickle
