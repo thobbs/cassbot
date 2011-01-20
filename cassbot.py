@@ -26,13 +26,13 @@ class IBotPlugin(Interface):
 
     def interestingMethods():
         """
-        Return a list of method names in which this plugin am interested.
+        Return a list of method names in which this plugin is interested.
         When the corresponding method is called on the bot's CassBotCore
         instance, then it will be called on this plugin as well (with an
         extra parameter, the CassBotCore instance, preceding the others.)
 
         This will be periodically re-called in order to refresh the plugin
-        list.
+        list, or a plugin can call bot.scan_plugins() to force an update.
         """
 
     def description():
