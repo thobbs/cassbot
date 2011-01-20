@@ -97,13 +97,25 @@ def plugin_from_pluginiface(iface, pluginclass):
         try:
             return pluginmap[id(pluginclass)]
         except KeyError:
-            pluginmap[id(pluginclass)] = p = pluginclass()
-            return p
+            try:
+                p = pluginclass()
+            except NotImplementedError:
+                pass
+            except Exception:
+                log.err(None, 'Attempting to instantiate plugin %s' % pluginclass)
+            else:
+                pluginmap[id(pluginclass)] = p
+                return p
 interface.adapter_hooks.append(plugin_from_pluginiface)
 
 
 class BaseBotPlugin(object):
     implements(IPlugin, IBotPlugin)
+
+    def __init__(self):
+        if self.__class__ is BaseBotPlugin:
+            # keep this one virtual
+            raise NotImplemented
 
     @classmethod
     def name(cls):
