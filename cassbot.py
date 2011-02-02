@@ -379,25 +379,24 @@ class CassBotService(service.MultiService):
         self.watcher_map = {}
         self.command_map = {}
 
-        self.plugins_seen = set()
+        self.pluginmap = {}
         self.plugin_scanner = internet.TimerService(self.plugin_scan_period, self.scan_plugins)
         self.plugin_scanner.setServiceParent(self)
 
         self.pfactory = CassBotFactory()
 
-        try:
-            self.loadState(self.statefile)
-        except (IOError, ValueError):
-            pass
-
     def startService(self):
         res = service.MultiService.startService(self)
         self.pfactory.service = self
         self.endpoint.connect(self.pfactory)
+        try:
+            self.loadStateFromFile(self.statefile)
+        except (IOError, ValueError):
+            pass
         return res
 
     def stopService(self):
-        self.saveState(self.statefile)
+        self.saveStateToFile(self.statefile)
         self.pfactory.stopTrying()
         bot = self.getbot()
         if bot:
@@ -405,14 +404,24 @@ class CassBotService(service.MultiService):
         self.pfactory.service = None
         return service.MultiService.stopService(self)
 
+    @staticmethod
+    def get_plugin_classes():
+        for p in getPlugins(IBotPlugin, cassbot_plugins):
+            if p is not BaseBotPlugin:
+                yield p
+
+    def get_loaded_plugins(self):
+        return self.pluginmap.values()
+
     def scan_plugins(self):
         self.watcher_map = {}
         self.command_map = {}
-        for p in getPlugins(IBotPlugin, plugins):
-            p = IBotPlugin(p)
-            if not self.seen_plugin(p):
-                log.msg('Loading plugin %s (first time)...' % p.name())
-                self.initialize_plugin_state(p)
+        for pclass in self.get_plugin_classes():
+            p = self.pluginmap.get(id(pclass), None)
+            if p is None:
+                log.msg('Loading plugin %s (first time)...' % pclass.name())
+                p = self.initialize_plugin_state(pclass)
+                self.pluginmap[id(pclass)] = p
             try:
                 for methodname in p.interestingMethods():
                     self.watcher_map.setdefault(methodname, []).append(p)
@@ -432,43 +441,39 @@ class CassBotService(service.MultiService):
         proto.cmd_prefix = self.state.get('cmd_prefix', None)
         proto.service = self
 
-    def initialize_plugin_state(self, plugin):
-        self.plugins_seen.add(id(plugin))
+    def initialize_plugin_state(self, pclass):
+        plugin = pclass()
         try:
             pstate = self.state['plugins'][plugin.name()]
         except KeyError:
             pass
         else:
             plugin.loadState(pstate)
+        return plugin
 
-    def saveState(self, statefile):
+    def saveStateToFile(self, statefile):
         self.state['plugins'] = self.assemblePluginStates()
         with open(statefile, 'w') as sfile:
             pickle.dump(self.state, sfile, -1)
 
-    def loadState(self, statefile):
+    def loadStateFromFile(self, statefile):
         with open(statefile, 'r') as sfile:
             self.state = pickle.load(sfile)
         self.reapplyPluginStates(self.state['plugins'])
 
     def assemblePluginStates(self):
         s = {}
-        for p in getPlugins(IBotPlugin, plugins):
-            p = IBotPlugin(p)
+        for p in self.get_loaded_plugins():
             pstate = p.saveState()
             if pstate is not None:
                 s[p.name()] = pstate
         return s
 
     def reapplyPluginStates(self, pstates):
-        for p in getPlugins(IBotPlugin, plugins):
-            p = IBotPlugin(p)
+        for p in self.get_loaded_plugins():
             pstate = pstates.get(p.name())
             if pstate is not None:
                 p.loadState(pstate)
-
-    def seen_plugin(self, plugin):
-        return id(plugin) in self.plugins_seen
 
     def __str__(self):
         return '<%s object [%s]%s>' % (
