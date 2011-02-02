@@ -87,35 +87,13 @@ class IBotPlugin(Interface):
         """
 
 
-# twisted's plugin system seems a little stupid for insisting that plugin
-# objects be instances (i.e., they must 'provide' the plugin interface, not
-# 'implement' it). here we provide a zope.interface adapter for getting
-# instances from implementing classes (by calling them, derp).
-pluginmap = {}
-def plugin_from_pluginiface(iface, pluginclass):
-    if isinstance(pluginclass, type) and iface.implementedBy(pluginclass):
-        try:
-            return pluginmap[id(pluginclass)]
-        except KeyError:
-            try:
-                p = pluginclass()
-            except NotImplementedError:
-                pass
-            except Exception:
-                log.err(None, 'Attempting to instantiate plugin %s' % pluginclass)
-            else:
-                pluginmap[id(pluginclass)] = p
-                return p
-interface.adapter_hooks.append(plugin_from_pluginiface)
-
-
 class BaseBotPlugin(object):
     implements(IPlugin, IBotPlugin)
 
     def __init__(self):
         if self.__class__ is BaseBotPlugin:
             # keep this one virtual
-            raise NotImplemented
+            raise NotImplementedError
 
     @classmethod
     def name(cls):
