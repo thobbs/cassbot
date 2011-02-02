@@ -5,7 +5,7 @@ from __future__ import with_statement
 import time
 import shlex
 from twisted.words.protocols import irc
-from twisted.internet import defer, protocol
+from twisted.internet import defer, protocol, endpoints
 from twisted.python import log
 from twisted.plugin import getPlugins, IPlugin
 from twisted.application import internet, service
@@ -359,11 +359,8 @@ class CassBotService(service.MultiService):
     plugin_scan_period = 240
     statefile = 'cassbot.state.db'
 
-    def __init__(self, host, port, nickname='cassbot', init_channels=(), reactor=None):
+    def __init__(self, desc, nickname='cassbot', init_channels=(), reactor=None):
         service.MultiService.__init__(self)
-
-        self.myhost = host
-        self.myport = int(port)
 
         self.state = {
             'nickname': nickname,
@@ -376,6 +373,9 @@ class CassBotService(service.MultiService):
             from twisted.internet import reactor
         self.reactor = reactor
 
+        self.endpoint_desc = desc
+        self.endpoint = endpoints.clientFromString(reactor, desc)
+
         self.watcher_map = {}
         self.command_map = {}
 
@@ -384,8 +384,6 @@ class CassBotService(service.MultiService):
         self.plugin_scanner.setServiceParent(self)
 
         self.pfactory = CassBotFactory()
-        self.client = internet.TCPClient(self.myhost, self.myport, self.pfactory, reactor=reactor)
-        self.client.setServiceParent(self)
 
         try:
             self.loadState(self.statefile)
@@ -393,12 +391,18 @@ class CassBotService(service.MultiService):
             pass
 
     def startService(self):
+        res = service.MultiService.startService(self)
         self.pfactory.service = self
-        return service.MultiService.startService(self)
+        self.endpoint.connect(self.pfactory)
+        return res
 
     def stopService(self):
-        self.pfactory.service = None
         self.saveState(self.statefile)
+        self.pfactory.stopTrying()
+        bot = self.getbot()
+        if bot:
+            bot.loseConnection()
+        self.pfactory.service = None
         return service.MultiService.stopService(self)
 
     def scan_plugins(self):
@@ -467,10 +471,9 @@ class CassBotService(service.MultiService):
         return id(plugin) in self.plugins_seen
 
     def __str__(self):
-        return '<%s object [%s:%d]%s>' % (
+        return '<%s object [%s]%s>' % (
             self.__class__.__name__,
-            self.myhost,
-            self.myport,
+            self.endpoint_desc,
             ' (connected)' if hasattr(self.pfactory, 'prot') else ''
         )
 
