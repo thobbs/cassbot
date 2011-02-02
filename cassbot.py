@@ -398,9 +398,10 @@ class CassBotService(service.MultiService):
     def stopService(self):
         self.saveStateToFile(self.statefile)
         self.pfactory.stopTrying()
-        bot = self.getbot()
-        if bot:
-            bot.loseConnection()
+        try:
+            self.getbot().transport.loseConnection()
+        except AttributeError:
+            pass
         self.pfactory.service = None
         return service.MultiService.stopService(self)
 
