@@ -18,6 +18,9 @@ except ImportError:
     import pickle
 
 
+enabled_but_not_found = object()
+
+
 class IBotPlugin(Interface):
     def name():
         """
@@ -31,8 +34,9 @@ class IBotPlugin(Interface):
         instance, then it will be called on this plugin as well (with an
         extra parameter, the CassBotCore instance, preceding the others.)
 
-        This will be periodically re-called in order to refresh the plugin
-        list, or a plugin can call bot.scan_plugins() to force an update.
+        This may be periodically re-called in order to refresh the plugin
+        list, or a plugin can call bot.service.scan_plugins() to force an
+        update.
         """
 
     def description():
@@ -379,9 +383,9 @@ class CassBotService(service.MultiService):
         self.watcher_map = {}
         self.command_map = {}
 
+        # all 'enabled' or 'loaded' plugins have an entry in here, keyed by
+        # the plugin name (as given by the .name() classmethod).
         self.pluginmap = {}
-        self.plugin_scanner = internet.TimerService(self.plugin_scan_period, self.scan_plugins)
-        self.plugin_scanner.setServiceParent(self)
 
         self.pfactory = CassBotFactory()
 
@@ -411,18 +415,20 @@ class CassBotService(service.MultiService):
             if p is not BaseBotPlugin:
                 yield p
 
-    def get_loaded_plugins(self):
-        return self.pluginmap.values()
-
     def scan_plugins(self):
         self.watcher_map = {}
         self.command_map = {}
         for pclass in self.get_plugin_classes():
-            p = self.pluginmap.get(id(pclass), None)
-            if p is None:
-                log.msg('Loading plugin %s (first time)...' % pclass.name())
-                p = self.initialize_plugin_state(pclass)
-                self.pluginmap[id(pclass)] = p
+            pname = pclass.name()
+            try:
+                p = self.pluginmap[pname]
+            except KeyError:
+                # not enabled
+                continue
+            if p is enabled_but_not_found:
+                # hey, we found it. load it up
+                log.msg('Loading plugin %s (first time)...' % pname)
+                p = self.enable_plugin(pclass)
             try:
                 for methodname in p.interestingMethods():
                     self.watcher_map.setdefault(methodname, []).append(p)
@@ -436,45 +442,77 @@ class CassBotService(service.MultiService):
                 log.err(None, 'Exception in plugin %s for implementedCommands request'
                               % (p.name(),))
 
+    def enable_plugin_by_name(self, pname):
+        """
+        Enable the plugin with the given name. If it can't be found
+        immediately, mark it enabled_but_not_found.
+
+        If the plugin is already enabled, do nothing.
+        """
+
+        self.pluginmap.setdefault(pname, enabled_but_not_found)
+        self.scan_plugins()
+
+    def enable_plugin(self, pclass):
+        """
+        Enable the given plugin class. Return the new plugin object.
+        If it's already enabled, return the existing plugin object.
+        """
+
+        pname = pclass.name()
+        p = self.pluginmap.get(pname, enabled_but_not_found)
+        if p is enabled_but_not_found:
+            log.msg('Instantiating plugin %s' % pname)
+            self.pluginmap[pname] = p = pclass()
+            pstate = self.state['plugins'].get(pname)
+            if pstate:
+                log.msg('Loading state for plugin %s' % pname)
+                p.loadState(pstate)
+        self.scan_plugins()
+        return p
+
+    def disable_plugin(self, pname):
+        """
+        Disable the plugin with the given name. If it was actually loaded and
+        enabled before, as expected, save its state first.
+        """
+
+        p = self.pluginmap.pop(pname, enabled_but_not_found)
+        if p is not enabled_but_not_found:
+            log.msg('Disabling plugin %s. Saving state.' % pname)
+            pstate = p.saveState()
+            if pstate is None:
+                self.state['plugins'].pop(pname, None)
+            else:
+                self.state['plugins'][pname] = pstate
+        self.scan_plugins()
+
     def initialize_proto_state(self, proto):
         proto.nickname = self.state['nickname']
         proto.join_channels = self.state.get('channels', ())
         proto.cmd_prefix = self.state.get('cmd_prefix', None)
         proto.service = self
 
-    def initialize_plugin_state(self, pclass):
-        plugin = pclass()
+    def initialize_plugin_state(self, plugin):
         try:
             pstate = self.state['plugins'][plugin.name()]
         except KeyError:
             pass
         else:
             plugin.loadState(pstate)
-        return plugin
 
     def saveStateToFile(self, statefile):
-        self.state['plugins'] = self.assemblePluginStates()
+        self.state['plugins_enabled'] = self.pluginmap.keys()
+        for pname in self.state['plugins_enabled']:
+            self.disable_plugin(pname)
         with open(statefile, 'w') as sfile:
             pickle.dump(self.state, sfile, -1)
 
     def loadStateFromFile(self, statefile):
         with open(statefile, 'r') as sfile:
             self.state = pickle.load(sfile)
-        self.reapplyPluginStates(self.state['plugins'])
-
-    def assemblePluginStates(self):
-        s = {}
-        for p in self.get_loaded_plugins():
-            pstate = p.saveState()
-            if pstate is not None:
-                s[p.name()] = pstate
-        return s
-
-    def reapplyPluginStates(self, pstates):
-        for p in self.get_loaded_plugins():
-            pstate = pstates.get(p.name())
-            if pstate is not None:
-                p.loadState(pstate)
+        for pname in self.state.get('plugins_enabled', ()):
+            self.enable_plugin_by_name(pname)
 
     def __str__(self):
         return '<%s object [%s]%s>' % (
