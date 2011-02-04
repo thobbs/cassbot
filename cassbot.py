@@ -363,6 +363,41 @@ class CassBotCore(irc.IRCClient):
         return irc.IRCClient.lineReceived(self, line)
 
 
+class AuthMap:
+    def __init__(self):
+        self.memberships = {}
+
+    def addPriv(self, user, privname):
+        self.memberships.setdefault(privname, set()).append(user)
+
+    def removePriv(self, user, privname):
+        glist = self.memberships.get(privname, ())
+        self.memberships[privname] = [x for x in glist if x != user]
+
+    def userHas(self, user, privname, skip=set()):
+        members = self.whoHas(privname)
+        if user in members:
+            return True
+        # avoid circular paths
+        newskip = skip | members
+        for m in members:
+            if m in skip:
+                continue
+            if self.userHas(user, m, skip=newskip):
+                return True
+        return False
+
+    def whoHas(self, privname):
+        return self.memberships.get(privname, ())
+
+    def saveState(self):
+        return self.memberships
+
+    def loadState(self, newmap):
+        # throw away current info!
+        self.memberships = newmap
+
+
 class CassBotFactory(protocol.ReconnectingClientFactory):
     protocol = CassBotCore
 
@@ -387,6 +422,7 @@ class CassBotService(service.MultiService):
             'cmd_prefix': None,
             'plugins': {},
         }
+        self.auth = AuthMap()
 
         if reactor is None:
             from twisted.internet import reactor
@@ -537,12 +573,16 @@ class CassBotService(service.MultiService):
         self.state['plugins_enabled'] = self.pluginmap.keys()
         for pname in self.state['plugins_enabled']:
             self.disable_plugin(pname)
+        self.state['auth_map'] = self.auth.saveState()
         with open(statefile, 'w') as sfile:
             pickle.dump(self.state, sfile, -1)
 
     def loadStateFromFile(self, statefile):
         with open(statefile, 'r') as sfile:
             self.state = pickle.load(sfile)
+        auth_dat = self.state.get('auth_map')
+        if auth_dat is not None:
+            self.auth.loadState(auth_dat)
         for pname in self.state.get('plugins_enabled', ()):
             self.enable_plugin_by_name(pname)
 
