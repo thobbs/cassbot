@@ -9,7 +9,7 @@ from twisted.internet import defer, protocol, endpoints
 from twisted.python import log
 from twisted.plugin import getPlugins, IPlugin
 from twisted.application import internet, service
-from zope.interface import Interface, interface, implements
+from zope.interface import Interface, implements, directlyProvides
 import cassbot_plugins
 
 try:
@@ -27,6 +27,18 @@ class IBotPlugin(Interface):
         Return the name of this plugin.
         """
 
+    def description():
+        """
+        Return a string describing what this plugin does, or None if there is
+        no need for a description.
+        """
+
+    def __call__():
+        """
+        Create an IBotPluginInstance instance of this class.
+        """
+
+class IBotPluginInstance(Interface):
     def interestingMethods():
         """
         Return a list of method names in which this plugin is interested.
@@ -37,12 +49,6 @@ class IBotPlugin(Interface):
         This may be periodically re-called in order to refresh the plugin
         list, or a plugin can call bot.service.scan_plugins() to force an
         update.
-        """
-
-    def description():
-        """
-        Return a string describing what this plugin does, or None if there is
-        no need for a description.
         """
 
     def implementedCommands():
@@ -90,9 +96,16 @@ class IBotPlugin(Interface):
         state info be available.
         """
 
+class BaseBotPlugin_meta(type):
+    def __new__(cls, name, bases, attrs):
+        newcls = super(BaseBotPlugin_meta, cls).__new__(cls, name, bases, attrs)
+        # why isn't zope.interface.classProvides inherited? that's dumb
+        directlyProvides(newcls, IBotPlugin, IPlugin)
+        return newcls
 
 class BaseBotPlugin(object):
-    implements(IPlugin, IBotPlugin)
+    implements(IBotPluginInstance)
+    __metaclass__ = BaseBotPlugin_meta
 
     def __init__(self):
         if self.__class__ is BaseBotPlugin:
@@ -384,6 +397,7 @@ class CassBotService(service.MultiService):
 
         self.watcher_map = {}
         self.command_map = {}
+        self.scanning_now = False
 
         # all 'enabled' or 'loaded' plugins have an entry in here, keyed by
         # the plugin name (as given by the .name() classmethod).
@@ -418,6 +432,22 @@ class CassBotService(service.MultiService):
                 yield p
 
     def scan_plugins(self):
+        # wrap _really_scan_plugins, in case some callback inside
+        # that method asks for another scan.
+        if self.scanning_now:
+            self.scan_again = True
+            return
+        self.scanning_now = True
+        try:
+            while True:
+                self.scan_again = False
+                self._really_scan_plugins()
+                if not self.scan_again:
+                    break
+        finally:
+            self.scanning_now = False
+
+    def _really_scan_plugins(self):
         self.watcher_map = {}
         self.command_map = {}
         for pclass in self.get_plugin_classes():
