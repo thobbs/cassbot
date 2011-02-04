@@ -361,11 +361,13 @@ class CassBotFactory(protocol.ReconnectingClientFactory):
 
 class CassBotService(service.MultiService):
     plugin_scan_period = 240
-    statefile = 'cassbot.state.db'
+    default_statefile = 'cassbot.state.db'
 
-    def __init__(self, desc, nickname='cassbot', init_channels=(), reactor=None):
+    def __init__(self, desc, nickname='cassbot', init_channels=(), reactor=None,
+                 statefile=None):
         service.MultiService.__init__(self)
 
+        self.statefile = statefile or self.default_statefile
         self.state = {
             'nickname': nickname,
             'channels': init_channels,
