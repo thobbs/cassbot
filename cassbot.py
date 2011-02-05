@@ -622,4 +622,24 @@ class CassBotService(service.MultiService):
         return self.pfactory.prot
 
 
+def require_priv(privname):
+    """
+    Decorator meant to be applied to command_* methods on cassbot plugins.
+    Checks that the user issuing a command has the given privilege, and
+    if not, returns an error instead of proceeding.
+    """
+    def make_wrapper(f):
+        command_name = f.func_name
+        if not command_name.startswith('command_'):
+            raise RuntimeError("require_priv can only decorate command_ methods")
+        command_name = command_name[len('command_'):]
+        @wraps(f)
+        def wrapper(self, bot, user, channel, args):
+            if not bot.service.auth.userHas(user, privname):
+                return bot.address_msg(user, channel, 'command %s requires privilege %s'
+                                                      % (command_name, privname))
+            return f(self, bot, user, channel, args)
+        return wrapper
+    return make_wrapper
+
 # vim: set et sw=4 ts=4 :
