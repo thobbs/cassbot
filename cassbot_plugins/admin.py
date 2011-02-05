@@ -1,5 +1,6 @@
 from cassbot import BaseBotPlugin, enabled_but_not_found, require_priv
 from twisted.internet import defer
+from twisted.plugin import getModule
 
 def makelist(i):
     return ', '.join(sorted(i)) if i else 'none'
@@ -48,3 +49,20 @@ class Admin(BaseBotPlugin):
             return
         bot.service.disable_plugin(args[0])
         yield bot.address_msg(user, channel, 'Module %s disabled.' % args[0])
+
+    @require_priv('admin')
+    @defer.inlineCallbacks
+    def command_modreload(self, bot, user, channel, args):
+        if len(args) == 0:
+            yield bot.address_msg(user, channel, 'usage: modreload [modulenames]')
+        for arg in args:
+            try:
+                p = bot.service.pluginmap[arg]
+            except KeyError:
+                yield bot.address_msg(user, channel, 'Module %s is not loaded.' % arg)
+                continue
+            mod = getModule(p.__module__).load()
+            reload(mod)
+            bot.service.disable_plugin(arg)
+            bot.service.enable_plugin_by_name(arg)
+            yield bot.address_msg(user, channel, 'Module %s reloaded.' % arg)
