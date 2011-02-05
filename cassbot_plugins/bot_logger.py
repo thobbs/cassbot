@@ -1,17 +1,72 @@
-from cassbot import BaseBotPlugin
+from cassbot import BaseBotPlugin, natural_list
+from twisted.internet import defer
 from twisted.python import log
 
 class BotLogger(BaseBotPlugin):
-    eterno_blacklist = ['evn']
+    eterno_blacklist = {'#cassandra': ('evn',), '#cassandra-dev': ('evn',)}
 
-    def __init__(self, blacklist=()):
-        self.log_blacklist = self.eterno_blacklist + list(blacklist)
+    def __init__(self):
+        self.per_channel_blacklist = \
+                dict((chan, set(blist))
+                     for (chan, blist) in self.eterno_blacklist.iteritems())
 
     def saveState(self):
-        return self.log_blacklist
+        return self.per_channel_blacklist
 
     def loadState(self, state):
-        self.log_blacklist = state
+        self.per_channel_blacklist = state
+
+    def command_blacklist(self, bot, user, chan, args):
+        bl = self.per_channel_blacklist.setdefault(chan, set())
+        if len(args) == 0:
+            return bot.address_msg(user, chan,
+                    'usage: "blacklist me" OR "blacklist [name [name2 [...]]]". '
+                    'Second form requires log_blacklist_admin privilege in this '
+                    'channel. Shell-style wildcards are ok.')
+        if len(args) == 1 and args[0] in ('me', user):
+            bl.add(user)
+            return bot.address_msg(user, chan, 'Blacklisting you for %s.' % chan)
+        if bot.service.auth.channelUserHas(chan, user, 'log_blacklist_admin'):
+            added = []
+            for arg in args:
+                if arg not in bl:
+                    bl.add(arg)
+                    added.append(arg)
+            return bot.address_msg(user, chan, 'Blacklisted %s'
+                                               % natural_list(map(repr, added)))
+        return bot.address_msg(user, chan,
+                'blacklisting other names requires the log_blacklist_admin '
+                'privilege in this channel.')
+
+    def command_unblacklist(self, bot, user, chan, args):
+        bl = self.per_channel_blacklist.setdefault(chan, set())
+        if len(args) == 0:
+            return bot.address_msg(user, chan,
+                    'usage: "unblacklist me" OR "unblacklist [name [name2 [...]]]". '
+                    'Second form requires log_blacklist_admin privilege in this '
+                    'channel. Shell-style wildcards are ok.')
+        if len(args) == 1 and args[0] in ('me', user):
+            if user in bl:
+                bl.discard(user)
+                return bot.address_msg(user, chan, 'Unblacklisting you for %s.' % chan)
+            return bot.address_msg(user, chan, 'You are not blacklisted in %s.' % chan)
+        if bot.service.auth.channelUserHas(chan, user, 'log_blacklist_admin'):
+            found = []
+            for arg in args:
+                if arg in bl:
+                    bl.discard(arg)
+                    found.append(arg)
+            return bot.address_msg(user, chan, 'Unblacklisted %s'
+                                               % natural_list(map(repr, found)))
+        return bot.address_msg(user, chan,
+                'unblacklisting other names requires the log_blacklist_admin '
+                'privilege in this channel.')
+
+    def command_show(self, bot, user, chan, args):
+        if len(args) == 1 and args[0] == 'blacklist':
+            bl = map(repr, sorted(self.per_channel_blacklist.get(chan, ())))
+            return bot.address_msg(user, chan, 'Blacklist for %s: %s'
+                                               % (chan, natural_list(bl)))
 
     def irclog(self, *a, **kw):
         kw['mtype'] = 'irclog'
@@ -70,10 +125,10 @@ class BotLogger(BaseBotPlugin):
 
     def action(self, bot, user, chan, data):
         user = user.split('!', 1)[0]
-        if user not in self.log_blacklist:
+        if user not in self.per_channel_blacklist.get(chan, ()):
             self.irclog('[%s] * %s %s' % (chan, user, data))
 
     def privmsg(self, bot, user, channel, msg):
         user = user.split('!', 1)[0]
-        if user not in self.log_blacklist:
+        if user not in self.per_channel_blacklist.get(chan, ()):
             self.irclog('[%s] <%s> %s' % (channel, user, msg))

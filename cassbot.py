@@ -701,4 +701,16 @@ def require_priv_in_channel(privname):
         return wrapper
     return make_wrapper
 
+
+def natural_list(items):
+    if len(items) == 0:
+        return '(none)'
+    elif len(items) == 1:
+        return items[0]
+    elif len(items) == 2:
+        return '%s and %s' % tuple(items)
+    else:
+        return '%s, and %s' % (', '.join(items[:-1]), items[-1])
+
+
 # vim: set et sw=4 ts=4 :
