@@ -4,6 +4,9 @@ from __future__ import with_statement
 
 import time
 import shlex
+from functools import wraps
+from itertools import imap
+from fnmatch import fnmatch
 from twisted.words.protocols import irc
 from twisted.internet import defer, protocol, endpoints
 from twisted.python import log
@@ -369,23 +372,39 @@ class CassBotCore(irc.IRCClient):
         return irc.IRCClient.lineReceived(self, line)
 
 
+def splituser(user):
+    parts = user.split('!', 1)
+    if len(parts) == 1:
+        return (parts[0], '', '')
+    hostparts = parts[1].split('@', 1)
+    if len(hostparts) == 1:
+        return (parts[0], '', hostparts[0])
+    return (parts[0], hostparts[0], hostparts[1])
+
+def mask_matches(mask, user):
+    mparts = splituser(mask)
+    uparts = splituser(user)
+    return all(imap(fnmatch, uparts, mparts))
+
+
 class AuthMap:
     def __init__(self):
         self.memberships = {}
 
-    def addPriv(self, user, privname):
-        self.memberships.setdefault(privname, set()).append(user)
+    def addPriv(self, mask, privname):
+        self.memberships.setdefault(privname, set()).add(mask)
 
-    def removePriv(self, user, privname):
+    def removePriv(self, mask, privname):
         glist = self.memberships.get(privname, ())
-        self.memberships[privname] = [x for x in glist if x != user]
+        self.memberships[privname] = [x for x in glist if x != mask]
 
     def userHas(self, user, privname, skip=set()):
         members = self.whoHas(privname)
-        if user in members:
-            return True
+        for mask in members:
+            if mask_matches(mask, user):
+                return True
         # avoid circular paths
-        newskip = skip | members
+        newskip = skip | set(members)
         for m in members:
             if m in skip:
                 continue
