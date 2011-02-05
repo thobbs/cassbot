@@ -390,13 +390,16 @@ def mask_matches(mask, user):
 class AuthMap:
     def __init__(self):
         self.memberships = {}
+        self.per_channel = {}
 
     def addPriv(self, mask, privname):
         self.memberships.setdefault(privname, set()).add(mask)
 
     def removePriv(self, mask, privname):
-        glist = self.memberships.get(privname, ())
-        self.memberships[privname] = [x for x in glist if x != mask]
+        try:
+            self.memberships[privname].remove(mask)
+        except KeyError:
+            pass
 
     def userHas(self, user, privname, skip=set()):
         members = self.whoHas(privname)
@@ -415,12 +418,45 @@ class AuthMap:
     def whoHas(self, privname):
         return self.memberships.get(privname, ())
 
-    def saveState(self):
-        return self.memberships
+    def _for_channels(f):
+        @wraps(f)
+        def wrap(self, channel, *a, **kw):
+            try:
+                c = self.per_channel[channel]
+            except KeyError:
+                c = self.per_channel[channel] = AuthMap()
+            return f(self, c, *a, **kw)
+        return wrap
 
-    def loadState(self, newmap):
+    @_for_channels
+    def addChannelPriv(self, c, mask, privname):
+        return c.addPriv(mask, privname)
+
+    @_for_channels
+    def removeChannelPriv(self, c, mask, privname):
+        return c.removePriv(mask, privname)
+
+    @_for_channels
+    def channelUserHas(self, c, user, privname):
+        return c.userHas(user, privname)
+
+    @_for_channels
+    def channelWhoHas(self, c, privname):
+        return c.addPriv(privname)
+
+    del _for_channels
+
+    def saveState(self):
+        return (self.memberships,
+                dict((k, v.saveState()) for (k, v) in self.per_channel.iteritems()
+                                        if v.memberships))
+
+    def loadState(self, newstate):
         # throw away current info!
-        self.memberships = newmap
+        self.memberships, per_chan_info = newstate
+        for k, v in per_chan_info.iteritems():
+            self.per_channel[k] = c = AuthMap()
+            c.loadState(v)
 
 
 class CassBotFactory(protocol.ReconnectingClientFactory):
@@ -638,6 +674,29 @@ def require_priv(privname):
             if not bot.service.auth.userHas(user, privname):
                 return bot.address_msg(user, channel, 'command %s requires privilege %s'
                                                       % (command_name, privname))
+            return f(self, bot, user, channel, args)
+        return wrapper
+    return make_wrapper
+
+def require_priv_in_channel(privname):
+    """
+    Decorator meant to be applied to command_* methods on cassbot plugins.
+    Checks that the user issuing a command has the given privilege in the
+    channel where the command was issued, and if not, returns an error instead
+    of proceeding.
+    """
+    def make_wrapper(f):
+        command_name = f.func_name
+        if not command_name.startswith('command_'):
+            raise RuntimeError("require_priv_in_channel can only decorate "
+                               "command_ methods")
+        command_name = command_name[len('command_'):]
+        @wraps(f)
+        def wrapper(self, bot, user, channel, args):
+            if not bot.service.auth.channelUserHas(channel, user, privname):
+                return bot.address_msg(user, channel,
+                               'command %s requires privilege %s in this channel'
+                               % (command_name, privname))
             return f(self, bot, user, channel, args)
         return wrapper
     return make_wrapper
