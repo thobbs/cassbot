@@ -1,4 +1,5 @@
-from cassbot import BaseBotPlugin, enabled_but_not_found, require_priv
+from cassbot import (BaseBotPlugin, enabled_but_not_found, require_priv,
+                     require_priv_in_channel)
 from twisted.internet import defer
 from twisted.plugin import getModule
 
@@ -32,29 +33,32 @@ class Admin(BaseBotPlugin):
     @require_priv('admin')
     @defer.inlineCallbacks
     def command_modenable(self, bot, user, channel, args):
-        if len(args) != 1:
-            yield bot.address_msg(user, channel, 'usage: modenable [modulename]')
+        if len(args) == 0:
+            yield bot.address_msg(user, channel, 'usage: modenable [modulenames]')
             return
-        bot.service.enable_plugin_by_name(args[0])
-        yield bot.address_msg(user, channel, 'Module %s loaded.' % p.name())
+        for arg in args:
+            bot.service.enable_plugin_by_name(arg)
+            yield bot.address_msg(user, channel, 'Module %s loaded.' % arg)
 
     @require_priv('admin')
     @defer.inlineCallbacks
     def command_moddisable(self, bot, user, channel, args):
-        if len(args) != 1:
-            yield bot.address_msg(user, channel, 'usage: moddisable [modulename]')
+        if len(args) == 0:
+            yield bot.address_msg(user, channel, 'usage: moddisable [modulenames]')
             return
-        if args[0] not in bot.service.pluginmap:
-            yield bot.address_msg(user, channel, 'Module %s is not loaded.' % args[0])
-            return
-        bot.service.disable_plugin(args[0])
-        yield bot.address_msg(user, channel, 'Module %s disabled.' % args[0])
+        for arg in args:
+            if arg not in bot.service.pluginmap:
+                yield bot.address_msg(user, channel, 'Module %s is not loaded.' % arg)
+                continue
+            bot.service.disable_plugin(arg)
+            yield bot.address_msg(user, channel, 'Module %s disabled.' % arg)
 
     @require_priv('admin')
     @defer.inlineCallbacks
     def command_modreload(self, bot, user, channel, args):
         if len(args) == 0:
             yield bot.address_msg(user, channel, 'usage: modreload [modulenames]')
+            return
         for arg in args:
             try:
                 p = bot.service.pluginmap[arg]
