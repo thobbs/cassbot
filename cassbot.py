@@ -247,28 +247,34 @@ class CassBotCore(irc.IRCClient):
     def dispatch_command(self, user, channel, cmd, args):
         cmd = cmd.lower()
         mname = 'command_' + cmd
-        handled = 0
+        dlist = []
         for p in self.service.command_map.get(cmd, ()):
             try:
                 pluginmethod = getattr(p, mname)
             except AttributeError:
                 continue
-            handled += 1
             d = defer.maybeDeferred(pluginmethod, self, user, channel, args)
             d.addErrback(log.err, "Exception in plugin %s while in %s"
                                   % (p.name(), mname))
-        if handled == 0:
-            self.command_not_found(user, channel, cmd)
+            dlist.append(d)
+        if len(dlist) == 0:
+            return self.command_not_found(user, channel, cmd)
+        return defer.DeferredList(dlist)
 
+    @defer.inlineCallbacks
     def address_msg(self, user, channel, msg):
-        if user != channel:
-            if '!' in user:
-                user = user.split('!', 1)[0]
-            msg = '%s: %s' % (user, msg)
-        return self.msg(channel, msg)
+        if '!' in user:
+            user = user.split('!', 1)[0]
+        if channel == self.nickname:
+            channel = user
+            transform = lambda m:m
+        else:
+            transform = lambda m: '%s: %s' % (user, m)
+        for line in msg.split('\n'):
+            yield self.msg(channel, transform(line))
 
     def command_not_found(self, user, channel, cmd):
-        self.address_msg(user, channel, "Sorry, I don't understand %r. :(" % cmd)
+        return self.address_msg(user, channel, "Sorry, I don't understand %r. :(" % cmd)
 
     ### methods called by the protocol
 
@@ -286,7 +292,7 @@ class CassBotCore(irc.IRCClient):
 
     def privmsg(self, user, channel, message):
         cmdstr = None
-        if user == channel:
+        if channel == self.nickname:
             cmdstr = message
         if message.startswith('%s:' % (self.nickname,)):
             cmdstr = message[len(self.nickname)+1:]
