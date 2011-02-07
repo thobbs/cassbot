@@ -5,7 +5,7 @@ from __future__ import with_statement
 import time
 import shlex
 from functools import wraps
-from itertools import imap
+from itertools import imap, izip
 from fnmatch import fnmatch
 from twisted.words.protocols import irc
 from twisted.internet import defer, protocol, endpoints
@@ -186,8 +186,11 @@ class CassBotCore(irc.IRCClient):
         'privmsg',
         'joined',
         'left',
+        'chanSynced',
         'noticed',
         'modeChanged',
+        'serverModeChanged',
+        'channelModeChanged',
         'signedOn',
         'kickedFrom',
         'nickChanged',
@@ -210,8 +213,8 @@ class CassBotCore(irc.IRCClient):
 
         self.channels = set()
         self.chan_modemap = {}
+        self.is_channel_synced = {}
         self.server_modemap = {}
-        self.user_chan_modemap = {}
         self.topic_map = {}
         self.channel_memberships = {}
         self.is_signed_on = False
@@ -225,7 +228,7 @@ class CassBotCore(irc.IRCClient):
     def make_watch_wrapper(self, mname, realmethod):
         @defer.inlineCallbacks
         def wrapper(*a, **kw):
-            realresult = realmethod(*a, **kw)
+            realresult = yield realmethod(*a, **kw)
             watchers = self.service.watcher_map.get(mname, ())
             for w in watchers:
                 pluginmethod = getattr(w, mname, noop)
@@ -245,6 +248,7 @@ class CassBotCore(irc.IRCClient):
         self.channels.discard(channel)
         removekey(self.topic_map, channel)
         removekey(self.chan_modemap, channel)
+        removekey(self.is_channel_synced, channel)
         removekey(self.channel_memberships, channel)
 
     def dispatch_command(self, user, channel, cmd, args):
@@ -308,7 +312,10 @@ class CassBotCore(irc.IRCClient):
             self.dispatch_command(user, channel, cmd, args)
 
     def joined(self, channel):
+        self.channel_memberships[channel] = set()
+        self.is_channel_synced[channel] = False
         self.add_channel(channel)
+        self.requestChannelMode(channel)
 
     def left(self, channel):
         self.leave_channel(channel)
@@ -317,23 +324,31 @@ class CassBotCore(irc.IRCClient):
         self.leave_channel(channel)
 
     def modeChanged(self, user, channel, beingset, modes, args):
-        for m in modes:
-            if user == channel:
-                if beingset:
-                    self.server_modemap.setdefault(user, {})[m] = args
-                else:
-                    try:
-                        del self.server_modemap[user][m]
-                    except KeyError:
-                        pass
-            else:
-                if beingset:
-                    self.chan_modemap.setdefault(channel, {})[m] = (user,) + args
-                else:
-                    try:
-                        del self.chan_modemap[channel][m]
-                    except KeyError:
-                        pass
+        if len(args) == 0:
+            args = [None] * len(modes)
+        if len(modes) != len(args):
+            log.msg('Unexpected mode change message: modes=%r, args=%r. How'
+                    ' do I interpret this?' % (modes, args))
+            return
+        if user == channel:
+            for m, a in izip(modes, args):
+                self.serverModeChanged(user, beingset, m, a)
+        else:
+            for m, a in izip(modes, args):
+                self.channelModeChanged(user, channel, beingset, m, a)
+
+    def serverModeChanged(self, user, beingset, mode, arg):
+        if beingset:
+            self.server_modemap.setdefault(user, {})[mode] = arg
+        else:
+            removekey(self.server_modemap[user], mode)
+
+    def channelModeChanged(self, user, channel, beingset, mode, arg):
+        modeset = self.chan_modemap.setdefault(channel, {}).setdefault(arg, set())
+        if beingset:
+            modeset.add(mode)
+        else:
+            modeset.discard(mode)
 
     def signedOn(self):
         self.factory.prot = self
@@ -348,17 +363,31 @@ class CassBotCore(irc.IRCClient):
 
     def userLeft(self, user, channel):
         self.channel_memberships.setdefault(channel, set()).discard(user)
+        removekey(self.chan_modemap.get(channel, {}), user)
 
-    userQuit = userKicked = userLeft
+    def userKicked(self, kickee, channel, kicker, message):
+        self.userLeft(kickee, channel)
+
+    def userQuit(self, user, channel):
+        self.userLeft(user, channel)
+        self.server_modemap.pop(user, None)
+
+    def chanSynced(self, channel):
+        self.is_channel_synced[channel] = True
 
     def topicUpdated(self, user, channel, newTopic):
         self.topic_map[channel] = newTopic
 
     def userRenamed(self, oldname, newname):
-        for cm in self.channel_memberships.values():
+        for cm in self.channel_memberships.itervalues():
             if oldname in cm:
                 cm.add(newname)
                 cm.remove(oldname)
+        for modemap in self.chan_modemap.itervalues():
+            modemap[newname] = modemap.pop(oldname, set())
+        modes = self.server_modemap.pop(oldname, None)
+        if modes:
+            self.server_modemap[newname] = modes
 
     def connectionLost(self, reason):
         self.is_signed_on = False
@@ -369,8 +398,39 @@ class CassBotCore(irc.IRCClient):
         return irc.IRCClient.connectionLost(self, reason)
 
     def lineReceived(self, line):
+        if getattr(self, 'debug_show_input', False):
+            print "LINE: %r" % line
         return irc.IRCClient.lineReceived(self, line)
 
+    def irc_RPL_NAMREPLY(self, prefix, params):
+        channel, nlist = params[-2:]
+        memb = self.channel_memberships.setdefault(channel, set())
+        chanmap = self.chan_modemap.setdefault(channel, {})
+        for name in nlist.split():
+            if name.startswith('@'):
+                name = name[1:]
+                self.modeChanged(None, channel, True, 'o', (name,))
+            if name.startswith('+'):
+                name = name[1:]
+                self.modeChanged(None, channel, True, 'v', (name,))
+            memb.add(name)
+
+    def irc_RPL_ENDOFNAMES(self, prefix, params):
+        channel = params[-2]
+        self.chanSynced(channel)
+
+    def irc_RPL_CHANNELMODEIS(self, prefix, params):
+        channel = params[1]
+        modes = params[2]
+        modeparams = params[3:]
+        added, removed = irc.parseModes(modes, modeparams, self.getChannelModeParams())
+        for mode, arg in added:
+            self.modeChanged(None, channel, True, mode, (arg,))
+        for mode, arg in removed:
+            self.modeChanged(None, channel, False, mode, (arg,))
+
+    def requestChannelMode(self, channel):
+        self.sendLine('MODE %s' % channel)
 
 def splituser(user):
     parts = user.split('!', 1)
