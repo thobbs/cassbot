@@ -28,9 +28,9 @@ class CassandraLinkChecker(BaseBotPlugin):
     @defer.inlineCallbacks
     def privmsg(self, bot, user, channel, msg):
         for r in chain(self.checktickets(msg), self.checkrevs(msg)):
-            yield bot.address_msg(channel, r, prefix=False)
+            yield bot.address_msg(user, channel, r, prefix=False)
 
     @defer.inlineCallbacks
     def action(self, bot, user, channel, msg):
         for r in chain(self.checktickets(msg), self.checkrevs(msg)):
-            yield bot.address_msg(channel, r, prefix=False)
+            yield bot.address_msg(user, channel, r, prefix=False)
