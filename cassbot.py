@@ -252,7 +252,7 @@ class CassBotCore(irc.IRCClient):
         removekey(self.channel_memberships, channel)
 
     def dispatch_command(self, user, channel, cmd, args):
-        cmd = cmd.lower()
+        cmd = cmd.lower().replace('-', '_')
         mname = 'command_' + cmd
         dlist = []
         for p in self.service.command_map.get(cmd, ()):
