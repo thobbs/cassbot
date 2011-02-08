@@ -1,0 +1,3 @@
+nickname='SuperBott'
+channels='#superbotts #bot-talk'
+server='ssl:host=irc.my-encrypted-irc.org:port=6668'

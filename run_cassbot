@@ -1,0 +1,25 @@
+#!/bin/bash
+
+definition="$1"
+[ -r "$definition" ] || { echo "Please specify the bot definition file." >&2; exit 1; }
+
+. "$definition"
+
+[ -z "$twistd" ] && TWISTD="$(which twistd)" || { echo "Can't find twistd." >&2; exit 1; }
+
+if [ -n "$foreground" ]; then
+    twistd_opts="-n -o"
+elif [ "$logfile" = "<syslog>" ]; then
+    twistd_opts="--syslog"
+else
+    [ -n "$logfile" ] || logfile="$(dirname "$0")/cassbot.log"
+    twistd_opts="--logfile $logfile"
+fi
+
+[ -n "$statefile" ] || statefile="$(dirname "$0")/cassbot.state.db"
+
+[ -n "$pidfile" ] || pidfile="$(dirname "$0")/cassbot.pid"
+
+export nickname channels server statefile
+
+exec "$twistd" $twistd_opts -y "$definition" --pidfile "$pidfile" $extra_opts
