@@ -269,13 +269,13 @@ class CassBotCore(irc.IRCClient):
         return defer.DeferredList(dlist)
 
     @defer.inlineCallbacks
-    def address_msg(self, user, channel, msg):
+    def address_msg(self, user, channel, msg, prefix=True):
         if '!' in user:
             user = user.split('!', 1)[0]
+        transform = lambda m:m
         if channel == self.nickname:
             channel = user
-            transform = lambda m:m
-        else:
+        elif prefix:
             transform = lambda m: '%s: %s' % (user, m)
         for line in msg.split('\n'):
             yield self.msg(channel, transform(line))
