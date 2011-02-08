@@ -130,5 +130,5 @@ class BotLogger(BaseBotPlugin):
 
     def privmsg(self, bot, user, channel, msg):
         user = user.split('!', 1)[0]
-        if user not in self.per_channel_blacklist.get(chan, ()):
+        if user not in self.per_channel_blacklist.get(channel, ()):
             self.irclog('[%s] <%s> %s' % (channel, user, msg))
