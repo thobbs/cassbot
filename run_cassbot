@@ -2,24 +2,27 @@
 
 definition="$1"
 [ -r "$definition" ] || { echo "Please specify the bot definition file." >&2; exit 1; }
+defdir=$(dirname "$definition")
+
+start_tap="$(dirname "$0")/tap.py"
 
 . "$definition"
 
-[ -z "$twistd" ] && TWISTD="$(which twistd)" || { echo "Can't find twistd." >&2; exit 1; }
+[ -z "$twistd" ] && twistd="$(which twistd)" || { echo "Can't find twistd." >&2; exit 1; }
 
 if [ -n "$foreground" ]; then
     twistd_opts="-n -o"
 elif [ "$logfile" = "<syslog>" ]; then
     twistd_opts="--syslog"
 else
-    [ -n "$logfile" ] || logfile="$(dirname "$0")/cassbot.log"
+    [ -n "$logfile" ] || logfile="$defdir/cassbot.log"
     twistd_opts="--logfile $logfile"
 fi
 
-[ -n "$statefile" ] || statefile="$(dirname "$0")/cassbot.state.db"
+[ -n "$statefile" ] || statefile="$defdir/cassbot.state.db"
 
-[ -n "$pidfile" ] || pidfile="$(dirname "$0")/cassbot.pid"
+[ -n "$pidfile" ] || pidfile="$defdir/cassbot.pid"
 
 export nickname channels server statefile
 
-exec "$twistd" $twistd_opts -y "$definition" --pidfile "$pidfile" $extra_opts
+exec "$twistd" $twistd_opts -y "$start_tap" --pidfile "$pidfile" $extra_opts
