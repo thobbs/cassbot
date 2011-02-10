@@ -1,5 +1,10 @@
 #!/bin/bash
 
+if [ "$1" = "-f" ]; then
+    foreground=1
+    shift
+fi
+
 definition="$1"
 [ -r "$definition" ] || { echo "Please specify the bot definition file." >&2; exit 1; }
 defdir=$(dirname "$definition")
