@@ -1,5 +1,6 @@
 import os
 import shlex
+from twisted.internet import reactor
 from twisted.application import service
 from cassbot import CassBotService
 
@@ -12,3 +13,12 @@ application = service.Application(nickname)
 bot = CassBotService(server, nickname=nickname, init_channels=channels,
                      statefile=statefile)
 bot.setServiceParent(application)
+
+def setup():
+    for modname in shlex.split(os.environ.get('autoload_modules', 'Admin')):
+        bot.enable_plugin_by_name(modname)
+
+    auto_admin = os.environ.get('auto_admin', os.environ['LOGNAME'])
+    bot.auth.addPriv(auto_admin, 'admin')
+
+reactor.callWhenRunning(setup)
