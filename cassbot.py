@@ -21,7 +21,9 @@ except ImportError:
     import pickle
 
 
-enabled_but_not_found = object()
+class enabled_but_not_found:
+    def __init__(self):
+        self.when_found = defer.Deferred()
 
 
 class IBotPlugin(Interface):
@@ -271,8 +273,7 @@ class CassBotCore(irc.IRCClient):
         log.err(err, "Exception in plugin %s while in %r command"
                      % (plugin.name(), cmd))
         return self.address_msg(user, channel,
-                "Uh oh! The %r command threw an exception. More info is in the log."
-                % (cmd,))
+                                "Error in the %r command: %s" % (cmd, err.value))
 
     @defer.inlineCallbacks
     def address_msg(self, user, channel, msg, prefix=True):
@@ -620,10 +621,12 @@ class CassBotService(service.MultiService):
             except KeyError:
                 # not enabled
                 continue
-            if p is enabled_but_not_found:
+            if isinstance(p, enabled_but_not_found):
                 # hey, we found it. load it up
                 log.msg('Loading plugin %s (first time)...' % pname)
-                p = self.enable_plugin(pclass)
+                p = self.enable_plugin_class(pclass, p.when_found, pname)
+                if p is None:
+                    continue
             try:
                 for methodname in p.interestingMethods():
                     self.watcher_map.setdefault(methodname, []).append(p)
@@ -639,31 +642,45 @@ class CassBotService(service.MultiService):
 
     def enable_plugin_by_name(self, pname):
         """
-        Enable the plugin with the given name. If it can't be found
-        immediately, mark it enabled_but_not_found.
+        Return a Deferred that will fire with the plugin with the given
+        name, once loaded. If it is already loaded, the Deferred will be
+        fired immediately.
 
-        If the plugin is already enabled, do nothing.
+        If the plugin is found but there is an error trying to load it,
+        the Deferred will be errbacked.
+
+        This may not ever be fired if the requested plugin is never found.
         """
 
-        self.pluginmap.setdefault(pname, enabled_but_not_found)
-        self.scan_plugins()
+        p = self.pluginmap.get(pname)
+        if p is None:
+            p = self.pluginmap[pname] = enabled_but_not_found()
+        if isinstance(p, enabled_but_not_found):
+            self.scan_plugins()
+            return p.when_found
+        return defer.succeed(p)
 
-    def enable_plugin(self, pclass):
+    def enable_plugin_class(self, pclass, deferred, pname):
         """
-        Enable the given plugin class. Return the new plugin object.
-        If it's already enabled, return the existing plugin object.
+        Enable the given plugin class. Return the new plugin object,
+        and also callback the given Deferred with it.
+
+        If there is a problem, errback the given Deferred and return
+        None.
         """
 
-        pname = pclass.name()
-        p = self.pluginmap.get(pname, enabled_but_not_found)
-        if p is enabled_but_not_found:
-            log.msg('Instantiating plugin %s' % pname)
+        log.msg('Instantiating plugin %s' % pname)
+        try:
             self.pluginmap[pname] = p = pclass()
             pstate = self.state['plugins'].get(pname)
             if pstate:
                 log.msg('Loading state for plugin %s' % pname)
                 p.loadState(pstate)
-        self.scan_plugins()
+        except Exception:
+            self.pluginmap.pop(pname, None)
+            deferred.errback()
+            return
+        deferred.callback(p)
         return p
 
     def disable_plugin(self, pname):
@@ -672,10 +689,14 @@ class CassBotService(service.MultiService):
         enabled before, as expected, save its state first.
         """
 
-        p = self.pluginmap.pop(pname, enabled_but_not_found)
-        if p is not enabled_but_not_found:
+        p = self.pluginmap.pop(pname, None)
+        if p is not None and not isinstance(p, enabled_but_not_found):
             log.msg('Disabling plugin %s. Saving state.' % pname)
-            pstate = p.saveState()
+            try:
+                pstate = p.saveState()
+            except Exception:
+                log.err(None, 'Trying to disable plugin %s' % pname)
+                pstate = None
             if pstate is None:
                 self.state['plugins'].pop(pname, None)
             else:
@@ -694,7 +715,10 @@ class CassBotService(service.MultiService):
         except KeyError:
             pass
         else:
-            plugin.loadState(pstate)
+            try:
+                plugin.loadState(pstate)
+            except Exception:
+                log.err(None, "Trying to load state in plugin %s" % plugin.name())
 
     def saveStateToFile(self, statefile):
         self.state['plugins_enabled'] = self.pluginmap.keys()
@@ -711,7 +735,8 @@ class CassBotService(service.MultiService):
         if auth_dat is not None:
             self.auth.loadState(auth_dat)
         for pname in self.state.get('plugins_enabled', ()):
-            self.enable_plugin_by_name(pname)
+            d = self.enable_plugin_by_name(pname)
+            d.addErrback(log.err, "Loading plugin %s" % pname)
 
     def __str__(self):
         return '<%s object [%s]%s>' % (

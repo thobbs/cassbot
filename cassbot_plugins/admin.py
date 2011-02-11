@@ -17,7 +17,7 @@ class Admin(BaseBotPlugin):
         loaded = set()
         available = set()
         for name, p in bot.service.pluginmap.iteritems():
-            if p is enabled_but_not_found:
+            if isinstance(p, enabled_but_not_found):
                 notfound.add(name)
             else:
                 loaded.add(name)
@@ -37,8 +37,20 @@ class Admin(BaseBotPlugin):
             yield bot.address_msg(user, channel, 'usage: modenable [modulenames]')
             return
         for arg in args:
-            bot.service.enable_plugin_by_name(arg)
-            yield bot.address_msg(user, channel, 'Module %s loaded.' % arg)
+            output = self.do_mod_enable(bot.service, arg)
+            yield bot.address_msg(user, channel, output)
+
+    def do_mod_enable(self, serv, modname):
+        d = serv.enable_plugin_by_name(modname)
+        if d.called:
+            if isinstance(d.result, failure.Failure):
+                err = d.result.value
+                return 'Problem loading %s: [%s] %s' \
+                       % (modname, err.type.__name__, err.value)
+            else:
+                return 'Module %s loaded.' % modname
+        else:
+            return 'Module %s marked for loading once it is found.' % modname
 
     @require_priv('admin')
     @defer.inlineCallbacks
@@ -60,13 +72,15 @@ class Admin(BaseBotPlugin):
             yield bot.address_msg(user, channel, 'usage: modreload [modulenames]')
             return
         for arg in args:
-            try:
-                p = bot.service.pluginmap[arg]
-            except KeyError:
-                yield bot.address_msg(user, channel, 'Module %s is not loaded.' % arg)
-                continue
-            mod = getModule(p.__module__).load()
-            reload(mod)
-            bot.service.disable_plugin(arg)
-            bot.service.enable_plugin_by_name(arg)
-            yield bot.address_msg(user, channel, 'Module %s reloaded.' % arg)
+            output = self.do_mod_reload(bot.service, arg)
+            yield bot.address_msg(user, channel, output)
+
+    def do_mod_reload(self, serv, modname):
+        try:
+            p = serv.pluginmap[arg]
+        except KeyError:
+            return 'Module %s is not loaded.' % arg
+        mod = getModule(p.__module__).load()
+        reload(mod)
+        bot.service.disable_plugin(arg)
+        return self.do_mod_enable(self, serv, modname)
