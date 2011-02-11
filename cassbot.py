@@ -261,12 +261,18 @@ class CassBotCore(irc.IRCClient):
             except AttributeError:
                 continue
             d = defer.maybeDeferred(pluginmethod, self, user, channel, args)
-            d.addErrback(log.err, "Exception in plugin %s while in %s"
-                                  % (p.name(), mname))
+            d.addErrback(self.handle_command_error, p, user, channel, cmd, args)
             dlist.append(d)
         if len(dlist) == 0:
             return self.command_not_found(user, channel, cmd)
         return defer.DeferredList(dlist)
+
+    def handle_command_error(self, err, plugin, user, channel, cmd, args):
+        log.err(err, "Exception in plugin %s while in %r command"
+                     % (plugin.name(), cmd))
+        return self.address_msg(user, channel,
+                "Uh oh! The %r command threw an exception. More info is in the log."
+                % (cmd,))
 
     @defer.inlineCallbacks
     def address_msg(self, user, channel, msg, prefix=True):
