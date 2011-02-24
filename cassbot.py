@@ -572,7 +572,7 @@ class CassBotService(service.MultiService):
     def startService(self):
         res = service.MultiService.startService(self)
         self.pfactory.service = self
-        self.endpoint.connect(self.pfactory)
+        connect_endpoint_without_fuss(self.reactor, self.endpoint, self.pfactory)
         try:
             self.loadStateFromFile(self.statefile)
         except (IOError, ValueError):
@@ -802,6 +802,25 @@ def natural_list(items):
         return '%s and %s' % tuple(items)
     else:
         return '%s, and %s' % (', '.join(items[:-1]), items[-1])
+
+
+def connect_endpoint_without_fuss(reactor, endpoint, factory):
+    """
+    Twisted's endpoint.connect function carefully wraps your factory inside
+    a special _WrappingFactory which wraps up your protocol instances (with
+    _WrappingProtocol, naturally) so it can get a Deferred firing when a
+    connection is complete. We don't care about any of that, and also this
+    _WrappingFactory does not properly pass on callbacks like
+    clientConnectionLost to the real factory, so it breaks
+    ReconnectingClientFactory.
+
+    Since I still like the endpoint definition stuff, we'll bypass the other
+    part.
+    """
+
+    return reactor.connectTCP(endpoint._host, endpoint._port, factory,
+                              timeout=endpoint._timeout,
+                              bindAddress=endpoint._bindAddress)
 
 
 # vim: set et sw=4 ts=4 :
