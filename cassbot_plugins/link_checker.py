@@ -12,10 +12,13 @@ class CassandraLinkChecker(BaseBotPlugin):
     low_ticket_cutoff = 10
 
     def checktickets(self, msg):
+        tickets = []
         for match in self.ticket_re.finditer(msg):
             ticket = int(match.group(2))
             if ticket > self.low_ticket_cutoff or match.group(1) == '##':
-                yield self.post_ticket(ticket)
+                if ticket not in tickets:
+                    tickets.append(ticket)
+                    yield self.post_ticket(ticket)
 
     def post_ticket(self, ticket_num):
         return self.ticket_url_template % (ticket_num,)
